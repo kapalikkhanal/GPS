@@ -116,20 +116,82 @@ mqttClient.on('connect', () => {
   });
 });
 
-// Handle incoming messages
-mqttClient.on('message', (topic, message) => {
+// MQTT message handler
+mqttClient.on('message', async (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
     console.log('Received data:', data);
 
-    // Access latitude and longitude
-    const { lat, lng } = data;
-    console.log(`Latitude: ${lat}, Longitude: ${lng}`);
+    const { lat, lng, speed, sat, id, timestamp } = data;
 
-    // Process the received data as needed
-    // For example, you could store it in a database, or perform real-time actions
+    if (!id || !lat || !lng) {
+      console.error('Missing required fields (id, lat, or lng)');
+      return;
+    }
+
+    // First, check if the vehicle exists
+    const { data: vehicle, error: vehicleError } = await supabase
+      .from('vehicles')
+      .select('id')
+      .eq('device_id', id)
+      .single();
+
+    if (vehicleError || !vehicle) {
+      console.error('Vehicle not found:', id);
+      return;
+    }
+
+    // Check if a location record exists for this vehicle
+    const { data: existingLocation, error: locationError } = await supabase
+      .from('vehicle_locations')
+      .select('id')
+      .eq('vehicle_id', vehicle.id)
+      .single();
+
+    let result;
+
+    if (existingLocation) {
+      // Update existing record
+      result = await supabase
+        .from('vehicle_locations')
+        .update({
+          location: `(${lng},${lat})`, // Point format for PostgreSQL
+          speed: speed || null,
+          heading: data.heading || null,
+          timestamp: timestamp || new Date().toISOString()
+        })
+        .eq('id', existingLocation.id);
+    } else {
+      // Insert new record
+      result = await supabase
+        .from('vehicle_locations')
+        .insert({
+          vehicle_id: vehicle.id,
+          location: `(${lng},${lat})`,
+          speed: speed || null,
+          heading: data.heading || null,
+          timestamp: timestamp || new Date().toISOString()
+        });
+    }
+
+    // Also update the vehicles table with last known location
+    await supabase
+      .from('vehicles')
+      .update({
+        last_location: `(${lng},${lat})`,
+        last_updated: new Date().toISOString(),
+        status: 'online'
+      })
+      .eq('id', vehicle.id);
+
+    if (result.error) {
+      console.error('Error updating location:', result.error);
+    } else {
+      console.log('Location updated successfully');
+    }
+
   } catch (error) {
-    console.error('Error parsing message:', error);
+    console.error('Error processing message:', error);
   }
 });
 
@@ -224,7 +286,6 @@ app.post('/api/gpsdata', (req, res) => {
 });
 
 app.get('/api/health', async (req, res) => {
-  console.log("Getting vehicles for user:", req.params.userId);
   try {
     res.json({ message: "Server working well." });
   } catch (error) {
