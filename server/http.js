@@ -6,10 +6,30 @@ const WebSocket = require('ws');
 const { createClient } = require('@supabase/supabase-js');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const mqtt = require('mqtt');
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocket.Server({ server });
+
+const host = 'mqtt.ably.io';
+const port = 8883;
+const username = 'yMJ3VQ.PxwimQ';
+const password = 'Vw4oM1CCMxx0tm8xTIZtda72vNj3SmNkLbVPipSt5Ek';
+
+// Merchant ID (same as ESP32's topic)
+const merchantId = '005000827602524';
+const topic = `${merchantId}/location`;
+
+// Connect to the MQTT broker
+const options = {
+    username,
+    password,
+    protocol: 'mqtts', // Secure connection
+    port,
+};
+
+const mqttClient = mqtt.connect(`mqtts://${host}`, options);
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -81,6 +101,45 @@ wss.on('connection', (ws) => {
             updateVehicleStatus(deviceId, 'offline');
         }
     });
+});
+
+mqttClient.on('connect', () => {
+    console.log('Connected to Ably MQTT broker');
+
+    // Subscribe to the topic
+    mqttClient.subscribe(topic, (err) => {
+        if (err) {
+            console.error('Failed to subscribe:', err);
+        } else {
+            console.log(`Subscribed to topic: ${topic}`);
+        }
+    });
+});
+
+// Handle incoming messages
+mqttClient.on('message', (topic, message) => {
+    try {
+        const data = JSON.parse(message.toString());
+        console.log('Received data:', data);
+
+        // Access latitude and longitude
+        const { lat, lng } = data;
+        console.log(`Latitude: ${lat}, Longitude: ${lng}`);
+
+        // Process the received data as needed
+        // For example, you could store it in a database, or perform real-time actions
+    } catch (error) {
+        console.error('Error parsing message:', error);
+    }
+});
+
+// Handle errors
+mqttClient.on('error', (err) => {
+    console.error('MQTT error:', err);
+});
+
+mqttClient.on('close', () => {
+    console.log('Connection to MQTT broker closed');
 });
 
 // API Routes
@@ -180,7 +239,7 @@ async function updateVehicleStatus(deviceId, status) {
     }
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3001;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
