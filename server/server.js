@@ -234,6 +234,33 @@ app.post('/api/vehicles', async (req, res) => {
   }
 });
 
+app.delete('/api/vehicles/:vehicleId', async (req, res) => {
+  try {
+    const { vehicleId } = req.params;
+
+    // Delete the vehicle from the vehicles table
+    const { data, error } = await supabase
+      .from('vehicles')
+      .delete()
+      .eq('id', vehicleId);
+
+    if (error) {
+      console.error('Supabase Delete Error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // If no rows were affected, it means the vehicle wasn't found
+    if (data.length === 0) {
+      return res.status(404).json({ message: 'Vehicle not found' });
+    }
+
+    res.json({ message: 'Vehicle deleted successfully' });
+  } catch (error) {
+    console.error('Full Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/vehicle_locations/:vehicleId', async (req, res) => {
   try {
     console.log(req.params.vehicleId)
