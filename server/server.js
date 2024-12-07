@@ -234,24 +234,45 @@ app.post('/api/vehicles', async (req, res) => {
   }
 });
 
-app.delete('/api/vehicles/:vehicleId', async (req, res) => {
+app.delete('/api/vehicles', async (req, res) => {
   try {
-    const { vehicleId } = req.params;
+    const { vehicleNumber, userId } = req.body;
 
-    // Delete the vehicle from the vehicles table
-    const { data, error } = await supabase
+    console.log(req.body)
+    // Fetch the vehicle's ID to ensure it's associated with the user
+    const { data: vehicle, error: fetchError } = await supabase
       .from('vehicles')
-      .delete()
-      .eq('id', vehicleId);
+      .select('*')
+      .eq('device_id', vehicleNumber)
+      .eq('user_id', userId)
+      .single();
 
-    if (error) {
-      console.error('Supabase Delete Error:', error);
-      return res.status(500).json({ error: error.message });
+    console.log(vehicle)
+
+    if (fetchError || !vehicle) {
+      return res.status(404).json({ message: 'Vehicle not found' });
     }
 
-    // If no rows were affected, it means the vehicle wasn't found
-    if (data.length === 0) {
-      return res.status(404).json({ message: 'Vehicle not found' });
+    // Delete related records in vehicle_locations
+    const { error: deleteLocationsError } = await supabase
+      .from('vehicle_locations')
+      .delete()
+      .eq('vehicle_id', vehicle.id);
+
+    if (deleteLocationsError) {
+      console.error('Error deleting related records:', deleteLocationsError);
+      return res.status(500).json({ error: deleteLocationsError.message });
+    }
+
+    // Delete the vehicle
+    const { error: deleteVehicleError } = await supabase
+      .from('vehicles')
+      .delete()
+      .eq('id', vehicle.id);
+
+    if (deleteVehicleError) {
+      console.error('Error deleting vehicle:', deleteVehicleError);
+      return res.status(500).json({ error: deleteVehicleError.message });
     }
 
     res.json({ message: 'Vehicle deleted successfully' });
