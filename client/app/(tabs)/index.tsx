@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
@@ -10,22 +10,42 @@ import {
   Alert,
   Dimensions,
   Platform,
-  StatusBar
+  StatusBar,
+  Image,
+  KeyboardAvoidingView
 } from 'react-native'
 import { supabase } from '../utils/supabase'
 import axios from 'axios'
-import { Feather, MaterialIcons } from '@expo/vector-icons'
+import { Feather, MaterialIcons, Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
 import { LinearGradient } from 'expo-linear-gradient'
 import Animated, {
   FadeIn,
   FadeOut,
   SlideInRight,
-  SlideOutLeft
+  SlideOutLeft,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring
 } from 'react-native-reanimated'
+import * as Haptics from 'expo-haptics'
 
 // Screen dimensions
 const { width, height } = Dimensions.get('window')
+
+// Enhanced Color Palette
+const COLORS = {
+  primary: '#4A6CF7',
+  secondary: '#6A7BA2',
+  background: '#F4F7FE',
+  text: '#2C3E50',
+  white: '#FFFFFF',
+  gray: '#A0AEC0',
+  lightGray: '#F9FAFB',
+  success: '#48BB78',
+  danger: '#F56565',
+  accent: '#5E81AC'
+}
 
 // Define Vehicle interface
 interface Vehicle {
@@ -40,65 +60,63 @@ interface Vehicle {
   updated_at: string
 }
 
-// Color Palette
-const COLORS = {
-  primary: '#4A6CF7',
-  secondary: '#6A7BA2',
-  background: '#F4F7FE',
-  text: '#2C3E50',
-  white: '#FFFFFF',
-  gray: '#A0AEC0',
-  success: '#48BB78',
-  danger: '#F56565'
-}
-
 export default function DashboardScreen() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [isModalVisible, setIsModalVisible] = useState(false)
   const [vehicleNumber, setVehicleNumber] = useState('')
+  const [userId, setUserId] = useState('')
   const [gpsCode, setGpsCode] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    fetchVehicles()
-  }, [])
+  const scale = useSharedValue(1)
 
-  const fetchVehicles = async () => {
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ scale: scale.value }]
+    }
+  })
+
+  const fetchVehicles = useCallback(async () => {
     setLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    console.log("Logged in User ID:", user?.id)
+    setError(null)
     try {
-      const response = await axios.get(`http://192.168.101.10:3001/api/vehicles/${user?.id}`)
-      console.log("Raw Response Data:", response.data)
-      console.log("Number of Vehicles:", response.data.length)
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.id) {
+        setUserId(user.id); // Correctly setting the user ID
+      }
+      const response = await axios.get(`https://gps-7qjm.onrender.com/api/vehicles/${user?.id}`)
 
-      // Add type checking
-      const validVehicles = response.data.filter((vehicle: { id: any; name: any; device_id: any }) =>
+      const validVehicles = response.data.filter((vehicle: Vehicle) =>
         vehicle.id && vehicle.name && vehicle.device_id
-      );
-
-      console.log("Valid Vehicles:", validVehicles);
+      )
 
       setVehicles(validVehicles)
     } catch (error) {
-      // console.error('Detailed Error fetching vehicles:', error.response ? error.response.data : error.message)
+      console.error('Error fetching vehicles:', error)
+      setError('Could not fetch vehicles. Please check your connection.')
       Alert.alert('Error', 'Could not fetch vehicles')
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    fetchVehicles()
+  }, [fetchVehicles])
 
   const handleAddVehicle = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+
     if (!vehicleNumber || !gpsCode) {
-      Alert.alert('Validation Error', 'Please fill all fields')
+      setError('Please fill all fields')
       return
     }
 
     setLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-
     try {
-      await axios.post('http://192.168.101.10:3001/api/vehicles', {
+      const { data: { user } } = await supabase.auth.getUser()
+      await axios.post('https://gps-7qjm.onrender.com/api/vehicles', {
         userId: user?.id,
         vehicleNumber,
         gpsCode
@@ -112,20 +130,31 @@ export default function DashboardScreen() {
       Alert.alert('Success', 'Vehicle added successfully')
     } catch (error) {
       console.error('Error adding vehicle:', error)
-      Alert.alert('Error', 'Could not add vehicle')
+      setError('Could not add vehicle. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
-  const renderVehicleItem = ({ item }: { item: Vehicle }) => {
-    console.log("Rendering Vehicle Item:", JSON.stringify(item));
+  const deleteVehicle = async (vehicleId: string, userId: string) => {
+    try {
+      const response = await axios.delete('https://gps-7qjm.onrender.com/api/vehicles/', {
+        data: {
+          vehicleNumber: vehicleId,
+          userId,
+        },
+      });
 
-    if (!item || !item.id) {
-      console.log('Invalid vehicle item:', item);
-      return null;
+      console.log(response.data.message);
+
+      // Perform any additional actions upon successful deletion (e.g., refresh the list)
+    } catch (error: any) {
+      console.error('Error deleting vehicle:', error.response?.data?.error || error.message);
+      // Handle the error appropriately (e.g., show an error message to the user)
     }
+  };
 
+  const renderVehicleItem = ({ item }: { item: Vehicle }) => {
     const getStatusColor = (status: string) => {
       switch (status.toLowerCase()) {
         case 'active': return COLORS.success
@@ -138,17 +167,22 @@ export default function DashboardScreen() {
       <Animated.View
         entering={SlideInRight}
         exiting={SlideOutLeft}
-        style={styles.vehicleCard}
+        style={[styles.vehicleCard, animatedStyle]}
       >
         <TouchableOpacity
-          onPress={() => router.push({
-            pathname: "/track",
-            params: {
-              vehicleId: item.id,
-              vehicleName: item.name,
-              deviceId: item.device_id
-            }
-          })}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+            router.push({
+              pathname: "/track",
+              params: {
+                vehicleId: item.id,
+                vehicleName: item.name,
+                deviceId: item.device_id
+              }
+            })
+          }}
+          onPressIn={() => scale.value = withSpring(0.95)}
+          onPressOut={() => scale.value = withSpring(1)}
         >
           <View style={styles.cardContent}>
             <View style={styles.vehicleDetails}>
@@ -158,15 +192,39 @@ export default function DashboardScreen() {
                 Added: {new Date(item.created_at).toLocaleDateString()}
               </Text>
             </View>
-            <View style={[
-              styles.statusIndicator,
-              { backgroundColor: getStatusColor(item.status) }
-            ]} />
+
+            <View style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 20 }}>
+              <View style={[
+                styles.statusIndicator,
+                { backgroundColor: getStatusColor(item.status) }
+              ]} />
+              <TouchableOpacity
+                onPress={() => { deleteVehicle(item.device_id, userId) }}>
+                <MaterialIcons name="delete" size={28} color={'red'} />
+              </TouchableOpacity>
+            </View>
+
           </View>
         </TouchableOpacity>
       </Animated.View>
     )
   }
+
+  const EmptyStateComponent = () => (
+    <View style={styles.emptyState}>
+      <Ionicons
+        name="car-outline"
+        size={100}
+        color={COLORS.secondary}
+      />
+      <Text style={styles.emptyStateText}>
+        No vehicles tracked yet
+      </Text>
+      <Text style={styles.emptyStateSubtext}>
+        Add a vehicle to start tracking
+      </Text>
+    </View>
+  )
 
   return (
     <View style={styles.container}>
@@ -176,13 +234,20 @@ export default function DashboardScreen() {
       />
 
       <LinearGradient
-        colors={[COLORS.background, COLORS.white]}
+        colors={[COLORS.background, COLORS.lightGray]}
         style={styles.header}
       >
-        <Text style={styles.headerTitle}>My Fleet</Text>
+        <Image
+          source={require('../../assets/icons/Stalker.png')}
+          style={styles.logo}
+          resizeMode="contain"
+        />
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => setIsModalVisible(true)}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+            setIsModalVisible(true)
+          }}
         >
           <MaterialIcons name="add" size={28} color={COLORS.white} />
         </TouchableOpacity>
@@ -193,79 +258,80 @@ export default function DashboardScreen() {
         renderItem={renderVehicleItem}
         keyExtractor={(item, index) => item.id?.toString() || index.toString()}
         contentContainerStyle={styles.listContent}
-
-        // Add these diagnostic props
-        onEndReachedThreshold={0.5}
-        initialNumToRender={10}
-        maxToRenderPerBatch={10}
-        windowSize={21}
-
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text>No vehicles found. Debug info:</Text>
-            <Text>Vehicles array length: {vehicles.length}</Text>
-            <Text>Vehicles data: {JSON.stringify(vehicles)}</Text>
-          </View>
-        }
-
+        ListEmptyComponent={<EmptyStateComponent />}
         refreshing={loading}
         onRefresh={fetchVehicles}
       />
-      
+
       <Modal
         animationType="slide"
         transparent={true}
         visible={isModalVisible}
         onRequestClose={() => setIsModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
-          <Animated.View
-            entering={SlideInRight}
-            exiting={SlideOutLeft}
-            style={styles.modalContent}
-          >
-            <Text style={styles.modalTitle}>Add New Vehicle</Text>
+        <KeyboardAvoidingView
+          style={styles.centeredModalView}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={styles.centeredModalView}>
+            <View style={styles.modalView}>
+              <Text style={styles.modalTitle}>Add New Vehicle</Text>
 
+              {error && (
+                <View style={styles.errorContainer}>
+                  <Text style={styles.errorText}>{error}</Text>
+                </View>
+              )}
 
-            <TextInput
-              style={styles.input}
-              placeholder="Vehicle Number"
-              placeholderTextColor={COLORS.gray}
-              value={vehicleNumber}
-              onChangeText={setVehicleNumber}
-            />
-
-            <TextInput
-              style={styles.input}
-              placeholder="GPS Device Code"
-              placeholderTextColor={COLORS.gray}
-              value={gpsCode}
-              onChangeText={setGpsCode}
-            />
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => setIsModalVisible(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
+              <TextInput
                 style={[
-                  styles.confirmButton,
-                  loading && styles.disabledButton
+                  styles.input,
+                  error && styles.inputError
                 ]}
-                onPress={handleAddVehicle}
-                disabled={loading}
-              >
-                <Text style={styles.confirmButtonText}>
-                  {loading ? 'Adding...' : 'Add Vehicle'}
-                </Text>
-              </TouchableOpacity>
+                placeholder="Vehicle Number"
+                placeholderTextColor={COLORS.gray}
+                value={vehicleNumber}
+                onChangeText={setVehicleNumber}
+              />
+
+              <TextInput
+                style={[
+                  styles.input,
+                  error && styles.inputError
+                ]}
+                placeholder="GPS Device Code"
+                placeholderTextColor={COLORS.gray}
+                value={gpsCode}
+                onChangeText={setGpsCode}
+              />
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                    setIsModalVisible(false)
+                  }}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.confirmButton,
+                    loading && styles.disabledButton
+                  ]}
+                  onPress={handleAddVehicle}
+                  disabled={loading}
+                >
+                  <Text style={styles.confirmButtonText}>
+                    {loading ? 'Adding...' : 'Add Vehicle'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </Animated.View>
-        </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   )
@@ -275,6 +341,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+    position: 'relative'
   },
   header: {
     flexDirection: 'row',
@@ -357,21 +424,26 @@ const styles = StyleSheet.create({
     marginTop: height * 0.2,
   },
   emptyStateText: {
-    fontSize: 18,
-    color: COLORS.secondary,
+    fontSize: 20,
+    color: COLORS.text,
     marginTop: 15,
+    fontWeight: '600',
   },
   emptyStateSubtext: {
-    fontSize: 14,
-    color: COLORS.gray,
+    fontSize: 15,
+    color: COLORS.secondary,
+    marginTop: 5,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+  centeredModalView: {
+    position: 'absolute',
+    zIndex: 1,
+    height: height,
+    width: width,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
-  modalContent: {
+  modalView: {
     width: width * 0.85,
     backgroundColor: COLORS.white,
     borderRadius: 20,
@@ -382,6 +454,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 6,
+  },
+  modalContent: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 25,
+    alignItems: 'center',
+    shadowColor: COLORS.text,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+    maxWidth: 500, // Add a max-width to prevent it from becoming too wide on larger screens
   },
   modalTitle: {
     fontSize: 20,
@@ -400,6 +485,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     fontSize: 16,
     color: COLORS.text,
+  },
+  inputError: {
+    borderColor: COLORS.danger,
   },
   modalActions: {
     flexDirection: 'row',
@@ -431,5 +519,21 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.5,
+  },
+  errorContainer: {
+    width: '100%',
+    backgroundColor: COLORS.danger + '20', // Transparent red
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 15,
+  },
+  errorText: {
+    color: COLORS.danger,
+    textAlign: 'center',
+  },
+  logo: {
+    width: 150,
+    height: 50,
+    alignSelf: 'center',
   },
 })

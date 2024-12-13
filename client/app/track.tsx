@@ -1,7 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, StyleSheet, Text, Dimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useLocalSearchParams } from 'expo-router';
+
+// Screen dimensions
+const { width, height } = Dimensions.get('window');
+
+// Color Palette
+const COLORS = {
+  primary: '#4A6CF7',
+  background: '#F4F7FE',
+  text: '#2C3E50',
+  error: '#F56565',
+  white: '#FFFFFF'
+};
 
 interface TrackParams {
   vehicleId: string;
@@ -21,17 +33,15 @@ export default function Track() {
   const vehicleId = params.vehicleId;
   const vehicleName = params.vehicleName;
   const deviceId = params.deviceId;
-  // console.log(vehicleId)
 
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [key, setKey] = useState(0);
   const [position, setPosition] = useState<VehiclePosition | null>(null);
+  const webViewRef = useRef<WebView>(null);
 
   // Function to fetch vehicle location
-  const fetchVehicleLocation = async () => {
+  const fetchVehicleLocation = useCallback(async () => {
     try {
-      const response = await fetch(`http://192.168.101.10:3001/api/vehicle_locations/${vehicleId}`);
+      const response = await fetch(`https://gps-7qjm.onrender.com/api/vehicle_locations/${vehicleId}`);
 
       if (!response.ok) {
         throw new Error('Failed to fetch vehicle location');
@@ -52,22 +62,37 @@ export default function Track() {
         speed: data.speed
       };
 
+      // Update position and send update to WebView
       setPosition(newPosition);
+      updateMapMarker(newPosition);
       setError(null);
-      generateMapHTML();
     } catch (err) {
       console.error('Error fetching vehicle location:', err);
       setError(err instanceof Error ? err.message : 'Unknown error occurred');
-    } finally {
-      setIsLoading(false);
     }
-  };
+  }, [vehicleId, vehicleName]);
 
-  // Function to handle reload
-  const handleReload = () => {
-    setKey(prevKey => prevKey + 1);
-    setIsLoading(true);
-    setError(null);
+  // Function to update marker via WebView
+  const updateMapMarker = (newPosition: VehiclePosition) => {
+    const safeVehicleName = vehicleName || 'Unknown Vehicle';
+    const safeSpeed = newPosition.speed?.toFixed(2) || '0';
+    const safeTimestamp = newPosition.timestamp
+      ? new Date(newPosition.timestamp).toLocaleString()
+      : 'Unknown';
+
+    const updateScript = `
+      if (window.updateMarker) {
+        window.updateMarker(
+          ${newPosition.latitude}, 
+          ${newPosition.longitude}, 
+          '${safeVehicleName}', 
+          '${safeSpeed}', 
+          '${safeTimestamp}'
+        );
+      }
+    `;
+
+    webViewRef.current?.injectJavaScript(updateScript);
   };
 
   // Setup interval for fetching location
@@ -75,34 +100,24 @@ export default function Track() {
     // Fetch immediately on mount
     fetchVehicleLocation();
 
-    // Set up interval to fetch every 3 seconds
+    // Set up interval to fetch every 7 seconds
     const intervalId = setInterval(fetchVehicleLocation, 7000);
 
     // Cleanup interval on component unmount
     return () => {
       clearInterval(intervalId);
     };
-  }, [deviceId]);
+  }, [fetchVehicleLocation]);
 
-  useEffect(() => {
-    handleReload();
-  }, [position])
-
+  // Generate initial HTML for WebView
   const generateMapHTML = () => {
     if (!position) return '';
-
-    const safeVehicleName = vehicleName || 'Unknown Vehicle';
-    const safeSpeed = position.speed?.toFixed(2) || '0';
-    const safeTimestamp = position.timestamp ? new Date(position.timestamp).toLocaleString() : 'Unknown';
 
     return `
       <!DOCTYPE html>
       <html>
         <head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-          <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-          <meta http-equiv="Pragma" content="no-cache" />
-          <meta http-equiv="Expires" content="0" />
           <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
           <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
           <style>
@@ -111,6 +126,7 @@ export default function Track() {
               padding: 0; 
               width: 100%; 
               height: 100%; 
+              overflow: hidden;
             }
             #map { 
               width: 100%; 
@@ -124,32 +140,46 @@ export default function Track() {
         <body>
           <div id="map"></div>
           <script>
-            // Immediately initialize map without waiting for DOMContentLoaded
-            try {
-              const map = L.map('map').setView([${position.latitude}, ${position.longitude}], 15);
+            let map, marker;
+            
+            function initMap() {
+              // Initialize map
+              map = L.map('map').setView([${position.latitude}, ${position.longitude}], 15);
               
               L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors',
-                noCache: true,
-                timestamp: new Date().getTime()
+                attribution: '© OpenStreetMap contributors'
               }).addTo(map);
 
-              const marker = L.marker([${position.latitude}, ${position.longitude}])
+              // Create initial marker
+              marker = L.marker([${position.latitude}, ${position.longitude}])
                 .addTo(map)
                 .bindPopup(
-                  '<b>${safeVehicleName}</b><br>' +
-                  'Speed: ${safeSpeed} km/h<br>' +
-                  'Last Updated: ${safeTimestamp}'
+                  '<b>${vehicleName || 'Unknown Vehicle'}</b><br>' +
+                  'Speed: ${position.speed?.toFixed(2) || '0'} km/h<br>' +
+                  'Last Updated: ${new Date(position.timestamp).toLocaleString()}'
                 )
                 .openPopup();
+            }
 
-              // Force map to refresh
-              setTimeout(() => {
-                map.invalidateSize();
-                window.ReactNativeWebView.postMessage('Map loaded successfully');
-              }, 100);
-            } catch (e) {
-              window.ReactNativeWebView.postMessage('Error: ' + e.message);
+            // Function to update marker position
+            window.updateMarker = function(lat, lng, name, speed, timestamp) {
+              if (marker) {
+                marker.setLatLng([lat, lng]);
+                marker.getPopup().setContent(
+                  '<b>' + name + '</b><br>' +
+                  'Speed: ' + speed + ' km/h<br>' +
+                  'Last Updated: ' + timestamp
+                );
+                map.panTo([lat, lng]);
+              }
+            }
+
+            // Initialize map when DOM is ready
+            document.addEventListener('DOMContentLoaded', initMap);
+            
+            // Handle potential load issues
+            window.onerror = function(message) {
+              window.ReactNativeWebView.postMessage('Error: ' + message);
             }
           </script>
         </body>
@@ -157,6 +187,7 @@ export default function Track() {
     `;
   };
 
+  // Render
   return (
     <View style={styles.container}>
       {error ? (
@@ -165,15 +196,12 @@ export default function Track() {
         </View>
       ) : position ? (
         <WebView
-          key={key}
+          ref={webViewRef}
           source={{ html: generateMapHTML() }}
           style={styles.map}
           javaScriptEnabled={true}
           domStorageEnabled={true}
-          startInLoadingState={true}
           cacheEnabled={false}
-          onLoadStart={() => setIsLoading(true)}
-          onLoadEnd={() => setIsLoading(false)}
           onError={(syntheticEvent) => {
             const { nativeEvent } = syntheticEvent;
             console.warn('WebView error:', nativeEvent);
@@ -182,16 +210,10 @@ export default function Track() {
           onMessage={(event) => {
             if (event.nativeEvent.data.startsWith('Error:')) {
               setError(event.nativeEvent.data);
-              handleReload();
             }
           }}
         />
       ) : null}
-      {isLoading && (
-        <View style={[styles.centerContainer, styles.loadingOverlay]}>
-          <ActivityIndicator size="large" color="#0000ff" />
-        </View>
-      )}
     </View>
   );
 }
@@ -199,6 +221,7 @@ export default function Track() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLORS.background,
   },
   map: {
     flex: 1,
@@ -207,18 +230,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  loadingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    backgroundColor: COLORS.background,
   },
   errorText: {
-    color: 'red',
+    color: COLORS.error,
     textAlign: 'center',
     marginHorizontal: 20,
+    fontSize: 16,
   },
 });
